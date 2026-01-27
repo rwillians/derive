@@ -1,0 +1,20 @@
+{
+  "folders": [
+    { "path": ".", "name": "@rwillians/derive" },
+  ],
+  "extensions": {
+    "recommendations": [
+      "EditorConfig.EditorConfig",
+      "JakeBecker.elixir-ls",
+      "fabiospampinato.vscode-highlight"
+    ]
+  },
+  "settings": {
+    "highlight.regexes": {
+      "(([\\^↑↓←→]\\s+)?(@let-it-crash|@todo))": {
+        "filterFileRegex": ".exs?$",
+        "decorations": [{ "fontWeight": "bold" }]
+      }
+    }
+  }
+}

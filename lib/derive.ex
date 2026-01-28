@@ -7,6 +7,7 @@ defmodule Derive do
   use GenServer
 
   import DateTime, only: [utc_now: 0]
+  import Derive.Context, only: [context_effect?: 1, update_context: 2]
   import Derive.SideEffect, only: [append: 2]
 
   alias __MODULE__, as: State
@@ -30,7 +31,14 @@ defmodule Derive do
   """
   @typedoc since: "0.1.0"
 
-  @type repo :: Ecto.Repo.t()
+  @type position :: non_neg_integer
+
+  @typedoc ~S"""
+  @todo add documentation
+  """
+  @typedoc since: "0.1.0"
+
+  @type reason :: binary | Exception.t() | term
 
   @typedoc ~S"""
   @todo add documentation
@@ -44,7 +52,7 @@ defmodule Derive do
   """
   @typedoc since: "0.1.0"
 
-  @type position :: non_neg_integer
+  @type repo :: Ecto.Repo.t()
 
   @typedoc ~S"""
   @todo add documentation, make sure to include the points below
@@ -62,19 +70,13 @@ defmodule Derive do
   """
   @typedoc since: "0.1.0"
 
-  @type reason :: binary | Exception.t() | term
-
-  @typedoc ~S"""
-  @todo add documentation
-  """
-  @typedoc since: "0.1.0"
-
   @type t :: %State{
           consumer: module,
           repo: Ecto.Repo.t(),
           batch_size: pos_integer,
-          cursor: %Derive.Cursor{},
           filters: [{atom, term}, ...],
+          cursor: %Derive.Cursor{},
+          ctx: map,
           timer: reference | nil,
           error_count: non_neg_integer
         }
@@ -91,6 +93,15 @@ defmodule Derive do
   """
   @doc since: "0.1.0"
 
+  @callback dump_ctx(repo, old_ctx, new_ctx) :: :ok
+            when old_ctx: map,
+                 new_ctx: map
+
+  @doc ~S"""
+  @todo add documentation
+  """
+  @doc since: "0.1.0"
+
   @callback fetch(repo, [filter | option, ...]) :: [event]
             when filter: {atom, term},
                  option: {:after, position} | {:take, pos_integer}
@@ -100,7 +111,15 @@ defmodule Derive do
   """
   @doc since: "0.1.0"
 
-  @callback handle_event(event) :: [side_effect]
+  @callback handle_event(event, ctx) :: [side_effect]
+            when ctx: map
+
+  @doc ~S"""
+  @todo add documentation
+  """
+  @doc since: "0.1.0"
+
+  @callback load_ctx(repo) :: map
 
   @doc ~S"""
   @todo add documentation
@@ -112,8 +131,9 @@ defmodule Derive do
   defstruct consumer: nil,
             repo: nil,
             batch_size: nil,
-            cursor: nil,
             filters: nil,
+            cursor: nil,
+            ctx: nil,
             timer: nil,
             error_count: 0
 
@@ -139,6 +159,7 @@ defmodule Derive do
       @behaviour unquote(__MODULE__)
 
       import unquote(__MODULE__), only: [into_multi: 1, into_multi: 2]
+      import Derive.Context, only: [put_ctx: 2]
       import Derive.SideEffect.Delete
       import Derive.SideEffect.Insert
       import Derive.SideEffect.Update
@@ -173,6 +194,12 @@ defmodule Derive do
       end
 
       @impl unquote(__MODULE__)
+      def load_ctx(_), do: %{}
+
+      @impl unquote(__MODULE__)
+      def dump_ctx(_, _, _), do: :ok
+
+      @impl unquote(__MODULE__)
       def persist(repo, [_ | _] = side_effects) do
         case repo.transact(into_multi(side_effects)) do
           {:ok, _} -> :ok
@@ -180,7 +207,9 @@ defmodule Derive do
         end
       end
 
-      defoverridable persist: 2
+      defoverridable load_ctx: 1,
+                     dump_ctx: 3,
+                     persist: 2
     end
   end
 
@@ -239,13 +268,19 @@ defmodule Derive do
     for {key, _} <- opts,
         do: raise(ArgumentError, "Unsupported option #{inspect(key)}")
 
+    ctx = consumer.load_ctx(repo)
+
+    unless is_non_struct_map(ctx),
+      do: raise(ArgumentError, "Expected #{inspect(consumer)}.load_ctx/1 to return a non-struct map, got #{inspect(ctx)}")
+
     state =
       %State{
         consumer: consumer,
         repo: repo,
         filters: filters,
         batch_size: batch_size,
-        cursor: Derive.Cursor.resolve!(repo, name)
+        cursor: Derive.Cursor.resolve!(repo, name),
+        ctx: ctx
       }
 
     Logger.metadata([consumer: name])
@@ -257,7 +292,7 @@ defmodule Derive do
   @doc false
   def handle_continue(:ingest, %State{} = state) do
     case process(state) do
-      {:ok, events} ->
+      {:ok, state, events} ->
         Logger.debug("Ingestion succeeded, processed #{length(events)} new events")
         {:noreply, progressed(state, to: last_position(events)), {:continue, :ingest}}
 
@@ -335,9 +370,10 @@ defmodule Derive do
       |> Keyword.put(:take, state.batch_size)
 
     with {:ok, [_ | _] = events} <- fetch(state.consumer, state.repo, filters),
-         {:ok, side_effects} <- handle_events(events, with: &consumer.handle_event/1),
+         {:ok, side_effects, new_ctx} <- handle_events(events, state.ctx, with: &consumer.handle_event/2),
          :ok <- consumer.persist(state.repo, side_effects),
-         do: {:ok, events}
+         :ok <- consumer.dump_ctx(state.repo, state.ctx, new_ctx),
+         do: {:ok, %{state | ctx: new_ctx}, events}
   end
 
   defp fetch(consumer, repo, filters) do
@@ -348,13 +384,20 @@ defmodule Derive do
     end
   end
 
-  defp handle_events(events, with: handler) do
-    side_effects =
-      events
-      |> Enum.map(handler)
-      |> Enum.flat_map(&normalize/1)
+  defp handle_events(events, persisted_ctx, with: handler) do
+    {side_effects, working_ctx} =
+      Enum.reduce(events, {[], persisted_ctx}, fn event, {acc_side_effects, acc_ctx} ->
+        {ctx_side_effects, side_effects} =
+          handler.(event, acc_ctx)
+          |> normalize()
+          |> Enum.split_with(&context_effect?/1)
 
-    {:ok, side_effects}
+        new_ctx = Enum.reduce(ctx_side_effects, acc_ctx, &update_context/2)
+
+        {acc_side_effects ++ side_effects, new_ctx}
+      end)
+
+    {:ok, side_effects, working_ctx}
   rescue
     reason -> {:error, reason}
   end

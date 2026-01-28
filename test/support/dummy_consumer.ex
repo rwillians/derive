@@ -10,7 +10,7 @@ defmodule Dummy.Consumer do
   def fetch(repo, filters), do: repo.all(Event.query(filters))
 
   @impl Derive
-  def handle_event(%Event{type: :user_created} = event) do
+  def handle_event(%Event{type: :user_created} = event, _) do
     insert(%User{
       id: event.payload["id"],
       name: event.payload["name"],
@@ -20,7 +20,7 @@ defmodule Dummy.Consumer do
     })
   end
 
-  def handle_event(%Event{type: :user_email_updated} = event) do
+  def handle_event(%Event{type: :user_email_updated} = event, _) do
     update(User.query(id: event.payload["user_id"]), %{
       email: event.payload["new_email"],
       updated_at: event.timestamp

@@ -302,7 +302,7 @@ defmodule Derive do
         {:noreply, up_to_date(state, timer)}
 
       {:error, reason} ->
-        Logger.error("Ingestion failed: #{inspect(reason)}")
+        Logger.error("Ingestion failed: #{Exception.format(:error, reason)}")
         timeout = :timer.seconds(state.error_count + 1)
         Logger.debug("Backing off for #{trunc(timeout / 1_000)} seconds")
         timer = Process.send_after(self(), :continue, timeout)
@@ -348,7 +348,7 @@ defmodule Derive do
   defp failed(state, reason, timer) do
     cursor =
       state.cursor
-      |> Cursor.changeset(%{stuck_since: utc_now(), stuck_reason: inspect(reason)})
+      |> Cursor.changeset(%{stuck_since: utc_now(), stuck_reason: Exception.format(:error, reason)})
       |> state.repo.update!()
 
     %{
@@ -371,7 +371,7 @@ defmodule Derive do
 
     with {:ok, [_ | _] = events} <- fetch(state.consumer, state.repo, filters),
          {:ok, side_effects, new_ctx} <- handle_events(events, state.ctx, with: &consumer.handle_event/2),
-         :ok <- consumer.persist(state.repo, side_effects),
+         :ok <- persist(state.repo, side_effects, with: &consumer.persist/2),
          :ok <- consumer.dump_ctx(state.repo, state.ctx, new_ctx),
          do: {:ok, %{state | ctx: new_ctx}, events}
   end
@@ -387,14 +387,14 @@ defmodule Derive do
   defp handle_events(events, persisted_ctx, with: handler) do
     {side_effects, working_ctx} =
       Enum.reduce(events, {[], persisted_ctx}, fn event, {acc_side_effects, acc_ctx} ->
-        {ctx_side_effects, side_effects} =
+        {ctx_side_effects, new_side_effects} =
           handler.(event, acc_ctx)
           |> normalize()
           |> Enum.split_with(&context_effect?/1)
 
         new_ctx = Enum.reduce(ctx_side_effects, acc_ctx, &update_context/2)
 
-        {acc_side_effects ++ side_effects, new_ctx}
+        {acc_side_effects ++ new_side_effects, new_ctx}
       end)
 
     {:ok, side_effects, working_ctx}
@@ -406,6 +406,9 @@ defmodule Derive do
   defp normalize([]), do: []
   defp normalize([_ | _] = side_effects), do: side_effects
   defp normalize(%_{} = side_effect), do: [side_effect]
+
+  defp persist(_, [], _), do: :ok
+  defp persist(repo, side_effects, with: handler), do: handler.(repo, side_effects)
 
   defp last_position([_ | _] = events), do: List.last(events).id
 end

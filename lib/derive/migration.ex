@@ -76,7 +76,7 @@ defmodule Derive.Migration do
         add :position, :integer, null: false
         add :last_synced_at, :utc_datetime_usec
         add :stuck_since, :utc_datetime_usec
-        add :stuck_reason, :string
+        add :stuck_reason, :text
       end
     end
   end

@@ -303,7 +303,7 @@ defmodule Derive do
 
       {:error, reason} ->
         Logger.error("Ingestion failed: #{Exception.format(:error, reason)}")
-        timeout = :timer.seconds(state.error_count + 1)
+        timeout = backoff(state.error_count + 1)
         Logger.debug("Backing off for #{trunc(timeout / 1_000)} seconds")
         timer = Process.send_after(self(), :continue, timeout)
         {:noreply, failed(state, reason, timer)}
@@ -411,4 +411,11 @@ defmodule Derive do
   defp persist(repo, side_effects, with: handler), do: handler.(repo, side_effects)
 
   defp last_position([_ | _] = events), do: List.last(events).id
+
+  defp backoff(attempt, base_ms \\ 100, max_ms \\ 300_000) do
+    delay = min(base_ms * Integer.pow(2, attempt), max_ms)
+    jitter = :rand.uniform(delay)
+
+    jitter
+  end
 end

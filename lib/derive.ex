@@ -7,7 +7,6 @@ defmodule Derive do
   use GenServer
 
   import DateTime, only: [utc_now: 0]
-  import Derive.Context, only: [context_effect?: 1, update_context: 2]
   import Derive.SideEffect, only: [append: 2]
 
   alias __MODULE__, as: State
@@ -93,15 +92,6 @@ defmodule Derive do
   """
   @doc since: "0.1.0"
 
-  @callback dump_ctx(repo, old_ctx, new_ctx) :: :ok
-            when old_ctx: map,
-                 new_ctx: map
-
-  @doc ~S"""
-  @todo add documentation
-  """
-  @doc since: "0.1.0"
-
   @callback fetch(repo, [filter | option, ...]) :: [event]
             when filter: {atom, term},
                  option: {:after, position} | {:take, pos_integer}
@@ -111,15 +101,14 @@ defmodule Derive do
   """
   @doc since: "0.1.0"
 
-  @callback handle_event(event, ctx) :: [side_effect]
-            when ctx: map
+  @callback handle_event(event) :: [side_effect] | :skip
 
   @doc ~S"""
   @todo add documentation
   """
   @doc since: "0.1.0"
 
-  @callback load_ctx(repo) :: map
+  @callback on_persisted(repo, [event, ...]) :: :ok
 
   @doc ~S"""
   @todo add documentation
@@ -159,7 +148,6 @@ defmodule Derive do
       @behaviour unquote(__MODULE__)
 
       import unquote(__MODULE__), only: [into_multi: 1, into_multi: 2]
-      import Derive.Context, only: [put_ctx: 2]
       import Derive.SideEffect.Delete
       import Derive.SideEffect.Insert
       import Derive.SideEffect.Update
@@ -194,12 +182,6 @@ defmodule Derive do
       end
 
       @impl unquote(__MODULE__)
-      def load_ctx(_), do: %{}
-
-      @impl unquote(__MODULE__)
-      def dump_ctx(_, _, _), do: :ok
-
-      @impl unquote(__MODULE__)
       def persist(repo, [_ | _] = side_effects) do
         case repo.transact(into_multi(side_effects)) do
           {:ok, _} -> :ok
@@ -207,8 +189,10 @@ defmodule Derive do
         end
       end
 
-      defoverridable load_ctx: 1,
-                     dump_ctx: 3,
+      @impl unquote(__MODULE__)
+      def on_persisted(_, _), do: :ok
+
+      defoverridable on_persisted: 2,
                      persist: 2
     end
   end
@@ -268,19 +252,13 @@ defmodule Derive do
     for {key, _} <- opts,
         do: raise(ArgumentError, "Unsupported option #{inspect(key)}")
 
-    ctx = consumer.load_ctx(repo)
-
-    unless is_non_struct_map(ctx),
-      do: raise(ArgumentError, "Expected #{inspect(consumer)}.load_ctx/1 to return a non-struct map, got #{inspect(ctx)}")
-
     state =
       %State{
         consumer: consumer,
         repo: repo,
         filters: filters,
         batch_size: batch_size,
-        cursor: Derive.Cursor.resolve!(repo, name),
-        ctx: ctx
+        cursor: Derive.Cursor.resolve!(repo, name)
       }
 
     Logger.metadata([consumer: name])
@@ -370,10 +348,10 @@ defmodule Derive do
       |> Keyword.put(:take, state.batch_size)
 
     with {:ok, [_ | _] = events} <- fetch(state.consumer, state.repo, filters),
-         {:ok, side_effects, new_ctx} <- handle_events(events, state.ctx, with: &consumer.handle_event/2),
+         {:ok, side_effects} <- handle_events(events, with: &consumer.handle_event/1),
          :ok <- persist(state.repo, side_effects, with: &consumer.persist/2),
-         :ok <- consumer.dump_ctx(state.repo, state.ctx, new_ctx),
-         do: {:ok, %{state | ctx: new_ctx}, events}
+         _ <- consumer.on_persisted(state.repo, events),
+         do: {:ok, state, events}
   end
 
   defp fetch(consumer, repo, filters) do
@@ -384,20 +362,8 @@ defmodule Derive do
     end
   end
 
-  defp handle_events(events, persisted_ctx, with: handler) do
-    {side_effects, working_ctx} =
-      Enum.reduce(events, {[], persisted_ctx}, fn event, {acc_side_effects, acc_ctx} ->
-        {ctx_side_effects, new_side_effects} =
-          handler.(event, acc_ctx)
-          |> normalize()
-          |> Enum.split_with(&context_effect?/1)
-
-        new_ctx = Enum.reduce(ctx_side_effects, acc_ctx, &update_context/2)
-
-        {acc_side_effects ++ new_side_effects, new_ctx}
-      end)
-
-    {:ok, side_effects, working_ctx}
+  defp handle_events(events, with: handler) do
+    {:ok, Enum.flat_map(events, &normalize(handler.(&1)))}
   rescue
     reason -> {:error, reason}
   end

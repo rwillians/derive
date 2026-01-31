@@ -65,10 +65,8 @@ defmodule Derive.SideEffect.Update do
 end
 
 defimpl Derive.SideEffect, for: Derive.SideEffect.Update do
-  import Derive.Utils, only: [step: 1]
-
   @impl Derive.SideEffect
-  def append(%Derive.SideEffect.Update{} = op, %Ecto.Multi{} = multi) do
-    Ecto.Multi.update_all(multi, step(op), op.query, op.update, returning: false)
+  def append(%Derive.SideEffect.Update{} = op, %Ecto.Multi{} = multi, step) do
+    Ecto.Multi.update_all(multi, step, op.query, op.update, returning: false)
   end
 end

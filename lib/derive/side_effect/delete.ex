@@ -39,10 +39,8 @@ defmodule Derive.SideEffect.Delete do
 end
 
 defimpl Derive.SideEffect, for: Derive.SideEffect.Delete do
-  import Derive.Utils, only: [step: 1]
-
   @impl Derive.SideEffect
-  def append(%Derive.SideEffect.Delete{} = op, %Ecto.Multi{} = multi) do
-    Ecto.Multi.delete_all(multi, step(op), op.query)
+  def append(%Derive.SideEffect.Delete{} = op, %Ecto.Multi{} = multi, step) do
+    Ecto.Multi.delete_all(multi, step, op.query)
   end
 end

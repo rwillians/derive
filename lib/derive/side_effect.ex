@@ -9,8 +9,9 @@ defprotocol Derive.SideEffect do
   """
   @doc since: "0.1.0"
 
-  @spec append(t, multi) :: multi
-        when multi: Ecto.Multi.t()
+  @spec append(t, multi, step) :: multi
+        when multi: Ecto.Multi.t(),
+             step: atom
 
-  def append(side_effect, multi)
+  def append(side_effect, multi, step)
 end

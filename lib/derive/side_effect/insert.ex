@@ -127,16 +127,14 @@ defmodule Derive.SideEffect.Insert do
 end
 
 defimpl Derive.SideEffect, for: Derive.SideEffect.Insert do
-  import Derive.Utils, only: [step: 1]
-
   @impl Derive.SideEffect
-  def append(%Derive.SideEffect.Insert{} = op, %Ecto.Multi{} = multi) do
+  def append(%Derive.SideEffect.Insert{} = op, %Ecto.Multi{} = multi, step) do
     opts = [
       conflict_target: op.conflict_target,
       on_conflict: op.on_conflict,
       returning: false
     ]
 
-    Ecto.Multi.insert(multi, step(op), op.record, opts)
+    Ecto.Multi.insert(multi, step, op.record, opts)
   end
 end

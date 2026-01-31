@@ -7,7 +7,7 @@ defmodule Derive do
   use GenServer
 
   import DateTime, only: [utc_now: 0]
-  import Derive.SideEffect, only: [append: 2]
+  import Derive.SideEffect, only: [append: 3]
 
   alias __MODULE__, as: State
   alias Derive.Cursor
@@ -75,7 +75,6 @@ defmodule Derive do
           batch_size: pos_integer,
           filters: [{atom, term}, ...],
           cursor: %Derive.Cursor{},
-          ctx: map,
           timer: reference | nil,
           error_count: non_neg_integer
         }
@@ -108,21 +107,20 @@ defmodule Derive do
   """
   @doc since: "0.1.0"
 
-  @callback on_persisted(repo, [event, ...]) :: :ok
+  @callback persist(repo, [side_effect, ...]) :: :ok | {:error, reason}
 
   @doc ~S"""
   @todo add documentation
   """
   @doc since: "0.1.0"
 
-  @callback persist(repo, [side_effect, ...]) :: :ok | {:error, reason}
+  @callback on_persisted(repo, [event, ...]) :: :ok
 
   defstruct consumer: nil,
             repo: nil,
             batch_size: nil,
             filters: nil,
             cursor: nil,
-            ctx: nil,
             timer: nil,
             error_count: 0
 
@@ -211,7 +209,14 @@ defmodule Derive do
 
   def into_multi(side_effects, multi \\ Multi.new())
   def into_multi([], %Multi{} = multi), do: multi
-  def into_multi([_ | _] = side_effects, %Multi{} = multi), do: Enum.reduce(side_effects, multi, &append/2)
+
+  def into_multi([_ | _] = side_effects, %Multi{} = multi) do
+    side_effects
+    |> Enum.with_index()
+    |> Enum.reduce(multi, fn {side_effect, index}, acc ->
+      append(side_effect, acc, to_atom_safe("side_effect_#{index}"))
+    end)
+  end
 
   #
   #   ↓ GENSERVER API
@@ -376,9 +381,15 @@ defmodule Derive do
   defp persist(_, [], _), do: :ok
   defp persist(repo, side_effects, with: handler), do: handler.(repo, side_effects)
 
+  defp to_atom_safe(string) do
+    String.to_existing_atom(string)
+  rescue
+    _ -> String.to_atom(string)
+  end
+
   defp last_position([_ | _] = events), do: List.last(events).id
 
-  defp backoff(attempt, base_ms \\ 100, max_ms \\ 300_000) do
+  defp backoff(attempt, base_ms \\ 1_000, max_ms \\ 300_000) do
     delay = min(base_ms * Integer.pow(2, attempt), max_ms)
     jitter = :rand.uniform(delay)
 

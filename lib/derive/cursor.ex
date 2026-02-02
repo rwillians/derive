@@ -39,7 +39,7 @@ defmodule Derive.Cursor do
     |> validate_required([:consumer_id, :position])
     |> validate_length(:consumer_id, min: 1, max: 96)
     |> validate_number(:position, greater_than_or_equal_to: 0)
-    |> validate_length(:stuck_reason, min: 1, max: 4_096)
+    |> validate_length(:stuck_reason, min: 1)
   end
 
   @doc false

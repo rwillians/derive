@@ -114,7 +114,14 @@ defmodule Derive do
   """
   @doc since: "0.1.0"
 
-  @callback on_persisted(repo, [event, ...]) :: :ok
+  @callback on_persisted(repo, [event, ...]) :: any | no_return
+
+  @doc ~S"""
+  @todo add documentation
+  """
+  @doc since: "0.1.0"
+
+  @callback on_failed(repo, reason :: term) :: any | no_return
 
   defstruct consumer: nil,
             repo: nil,
@@ -148,6 +155,7 @@ defmodule Derive do
       import unquote(__MODULE__), only: [into_multi: 1, into_multi: 2]
       import Derive.SideEffect.Delete
       import Derive.SideEffect.Insert
+      import Derive.SideEffect.Run
       import Derive.SideEffect.Update
 
       @doc false
@@ -190,8 +198,12 @@ defmodule Derive do
       @impl unquote(__MODULE__)
       def on_persisted(_, _), do: :ok
 
-      defoverridable on_persisted: 2,
-                     persist: 2
+      @impl unquote(__MODULE__)
+      def on_failed(_, _), do: :ok
+
+      defoverridable persist: 2,
+                     on_persisted: 2,
+                     on_failed: 2
     end
   end
 
@@ -281,21 +293,21 @@ defmodule Derive do
 
       :end_of_stream ->
         Logger.debug("End of stream reached, will sleep for 5 seconds...")
-        timer = Process.send_after(self(), :continue, 5_000)
+        timer = Process.send_after(self(), :resume, 5_000)
         {:noreply, up_to_date(state, timer)}
 
       {:error, reason} ->
         Logger.error("Ingestion failed: #{Exception.format(:error, reason)}")
         timeout = backoff(state.error_count + 1)
         Logger.debug("Backing off for #{trunc(timeout / 1_000)} seconds")
-        timer = Process.send_after(self(), :continue, timeout)
+        timer = Process.send_after(self(), :resume, timeout)
         {:noreply, failed(state, reason, timer)}
     end
   end
 
   @impl GenServer
   @doc false
-  def handle_info(:continue, state), do: {:noreply, state, {:continue, :ingest}}
+  def handle_info(:resume, state), do: {:noreply, state, {:continue, :ingest}}
 
   #
   #   ↓ STATE API
@@ -346,17 +358,25 @@ defmodule Derive do
   #   ↓ PROCESSING API
   #
 
-  defp process(%State{consumer: consumer} = state) do
+  defp process(%State{consumer: consumer, repo: repo} = state) do
     filters =
       state.filters
       |> Keyword.put(:after, state.cursor.position)
       |> Keyword.put(:take, state.batch_size)
 
-    with {:ok, [_ | _] = events} <- fetch(state.consumer, state.repo, filters),
+    with {:ok, [_ | _] = events} <- fetch(consumer, repo, filters),
          {:ok, side_effects} <- handle_events(events, with: &consumer.handle_event/1),
-         :ok <- persist(state.repo, side_effects, with: &consumer.persist/2),
-         _ <- consumer.on_persisted(state.repo, events),
-         do: {:ok, state, events}
+         :ok <- persist(repo, side_effects, with: &consumer.persist/2),
+         _ <- consumer.on_persisted(repo, events) do
+      {:ok, state, events}
+    else
+      :end_of_stream ->
+        :end_of_stream
+
+      {:error, reason} ->
+        _ = consumer.on_failed(repo, reason)
+        {:error, reason}
+    end
   end
 
   defp fetch(consumer, repo, filters) do
@@ -365,11 +385,17 @@ defmodule Derive do
       #      ↓ [e]nd [o]f [s]tream
       [] -> :end_of_stream
     end
+  rescue
+    reason -> {:error, reason}
+  catch
+    reason -> {:error, reason}
   end
 
   defp handle_events(events, with: handler) do
     {:ok, Enum.flat_map(events, &normalize(handler.(&1)))}
   rescue
+    reason -> {:error, reason}
+  catch
     reason -> {:error, reason}
   end
 
@@ -379,7 +405,13 @@ defmodule Derive do
   defp normalize(%_{} = side_effect), do: [side_effect]
 
   defp persist(_, [], _), do: :ok
-  defp persist(repo, side_effects, with: handler), do: handler.(repo, side_effects)
+  defp persist(repo, side_effects, with: handler) do
+    handler.(repo, side_effects)
+  rescue
+    reason -> {:error, reason}
+  catch
+    reason -> {:error, reason}
+  end
 
   defp to_atom_safe(string) do
     String.to_existing_atom(string)

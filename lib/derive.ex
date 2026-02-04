@@ -142,9 +142,13 @@ defmodule Derive do
 
   defmacro __using__(opts) do
     {otp_app, opts} = Keyword.pop!(opts, :otp_app)
+    {batch_size, opts} = Keyword.pop(opts, :batch_size, 100)
 
     unless is_atom(otp_app),
       do: raise(ArgumentError, ":otp_app option is required and must be an atom")
+
+    unless is_integer(batch_size) and batch_size > 0,
+      do: raise(ArgumentError, ":batch_size option must be a positive integer")
 
     for {key, _} <- opts,
         do: raise(ArgumentError, "Unknown option #{inspect(key)}")
@@ -177,6 +181,7 @@ defmodule Derive do
           |> Keyword.put(:consumer, __MODULE__)
           |> Keyword.put_new(:name, __MODULE__)
           |> Keyword.put_new(:repo, repo)
+          |> Keyword.put_new(:batch_size, unquote(batch_size))
 
         %{
           id: opts[:name],
@@ -248,8 +253,8 @@ defmodule Derive do
     {consumer, opts} = Keyword.pop!(opts, :consumer)
     {name, opts} = Keyword.pop(opts, :name, consumer)
     {repo, opts} = Keyword.pop!(opts, :repo)
+    {batch_size, opts} = Keyword.pop!(opts, :batch_size)
     {filters, opts} = Keyword.pop(opts, :filters, [])
-    {batch_size, opts} = Keyword.pop(opts, :batch_size, 100)
 
     unless is_atom(consumer) and Code.ensure_loaded?(consumer),
       do: raise(ArgumentError, "Expected :consumer to be an existing module, got #{inspect(consumer)}")

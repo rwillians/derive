@@ -1,7 +1,7 @@
 defmodule Derive.MixProject do
   use Mix.Project
 
-  @version "0.4.0"
+  @version "0.4.1"
   @github "https://github.com/rwillians/derive"
 
   @description """

@@ -100,6 +100,13 @@ defmodule Derive do
   """
   @doc since: "0.1.0"
 
+  @callback prepare(event) :: event | :skip
+
+  @doc ~S"""
+  @todo add documentation
+  """
+  @doc since: "0.1.0"
+
   @callback handle_event(event) :: [side_effect] | :skip
 
   @doc ~S"""
@@ -165,10 +172,10 @@ defmodule Derive do
       @doc false
       @spec child_spec([option]) :: map
             when option:
-              {:name, atom}
-              | {:repo, Ecto.Repo.t()}
-              | {:filters, keyword}
-              | {:batch_size, pos_integer}
+                   {:name, atom}
+                   | {:repo, Ecto.Repo.t()}
+                   | {:filters, keyword}
+                   | {:batch_size, pos_integer}
 
       def child_spec(opts \\ []) do
         repo =
@@ -193,6 +200,9 @@ defmodule Derive do
       end
 
       @impl unquote(__MODULE__)
+      def prepare(event), do: event
+
+      @impl unquote(__MODULE__)
       def persist(repo, [_ | _] = side_effects) do
         case repo.transact(into_multi(side_effects)) do
           {:ok, _} -> :ok
@@ -206,7 +216,8 @@ defmodule Derive do
       @impl unquote(__MODULE__)
       def on_failed(_, _), do: :ok
 
-      defoverridable persist: 2,
+      defoverridable prepare: 1,
+                     persist: 2,
                      on_persisted: 2,
                      on_failed: 2
     end
@@ -283,7 +294,7 @@ defmodule Derive do
         cursor: Derive.Cursor.resolve!(repo, name)
       }
 
-    Logger.metadata([consumer: name])
+    Logger.metadata(consumer: name)
 
     {:ok, state, {:continue, :ingest}}
   end
@@ -298,13 +309,13 @@ defmodule Derive do
 
       :end_of_stream ->
         Logger.debug("End of stream reached, will sleep for 5 seconds...")
-        timer = Process.send_after(self(), :resume, 5_000)
+        timer = Process.send_after(self(), :resume, :timer.seconds(5))
         {:noreply, up_to_date(state, timer)}
 
       {:error, reason} ->
         Logger.error("Ingestion failed: #{Exception.format(:error, reason)}")
         timeout = backoff(state.error_count + 1)
-        Logger.debug("Backing off for #{trunc(timeout / 1_000)} seconds")
+        Logger.info("Backing off for #{trunc(timeout / 1_000)} seconds")
         timer = Process.send_after(self(), :resume, timeout)
         {:noreply, failed(state, reason, timer)}
     end
@@ -370,9 +381,12 @@ defmodule Derive do
       |> Keyword.put(:take, state.batch_size)
 
     with {:ok, [_ | _] = events} <- fetch(consumer, repo, filters),
-         {:ok, side_effects} <- handle_events(events, with: &consumer.handle_event/1),
+         {:ok, prepared_events} <- prepare_events(events, with: &consumer.prepare/1),
+         {:ok, side_effects} <- handle_events(prepared_events, with: &consumer.handle_event/1),
          :ok <- persist(repo, side_effects, with: &consumer.persist/2),
          _ <- consumer.on_persisted(repo, events) do
+      #              because skipped events on prepare_events/2 are
+      #            ↓ considered as "handled"
       {:ok, state, events}
     else
       :end_of_stream ->
@@ -396,6 +410,15 @@ defmodule Derive do
     reason -> {:error, reason}
   end
 
+  defp prepare_events(events, with: handler) do
+    prepared_events =
+      events
+      |> Enum.map(handler)
+      |> Enum.reject(&(&1 == :skip))
+
+    {:ok, prepared_events}
+  end
+
   defp handle_events(events, with: handler) do
     {:ok, Enum.flat_map(events, &normalize(handler.(&1)))}
   rescue
@@ -410,6 +433,7 @@ defmodule Derive do
   defp normalize(%_{} = side_effect), do: [side_effect]
 
   defp persist(_, [], _), do: :ok
+
   defp persist(repo, side_effects, with: handler) do
     handler.(repo, side_effects)
   rescue
@@ -426,7 +450,7 @@ defmodule Derive do
 
   defp last_position([_ | _] = events), do: List.last(events).id
 
-  defp backoff(attempt, base_ms \\ 1_000, max_ms \\ 300_000) do
+  defp backoff(attempt, base_ms \\ :timer.seconds(1), max_ms \\ :timer.minutes(5)) do
     delay = min(base_ms * Integer.pow(2, attempt), max_ms)
     jitter = :rand.uniform(delay)
 

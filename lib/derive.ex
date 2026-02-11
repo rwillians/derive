@@ -304,18 +304,17 @@ defmodule Derive do
   def handle_continue(:ingest, %State{} = state) do
     case process(state) do
       {:ok, state, events} ->
-        Logger.debug("Ingestion succeeded, processed #{length(events)} new events")
+        Logger.debug("ingestion succeeded, processed #{length(events)} new events")
         {:noreply, progressed(state, to: last_position(events)), {:continue, :ingest}}
 
       :end_of_stream ->
-        Logger.debug("End of stream reached, will sleep for 5 seconds...")
+        Logger.debug("up to date, will sleep for 5 seconds...")
         timer = Process.send_after(self(), :resume, :timer.seconds(5))
         {:noreply, up_to_date(state, timer)}
 
       {:error, reason} ->
-        Logger.error("Ingestion failed: #{Exception.format(:error, reason)}")
+        Logger.error(Exception.format(:error, reason))
         timeout = backoff(state.error_count + 1)
-        Logger.info("Backing off for #{trunc(timeout / 1_000)} seconds")
         timer = Process.send_after(self(), :resume, timeout)
         {:noreply, failed(state, reason, timer)}
     end

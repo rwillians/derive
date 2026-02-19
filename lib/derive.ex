@@ -241,9 +241,7 @@ defmodule Derive do
   def into_multi([_ | _] = side_effects, %Multi{} = multi) do
     side_effects
     |> Enum.with_index()
-    |> Enum.reduce(multi, fn {side_effect, index}, acc ->
-      append(side_effect, acc, to_atom_safe("side_effect_#{index}"))
-    end)
+    |> Enum.reduce(multi, fn {side_effect, i}, acc -> append(side_effect, acc, {:side_effect, i}) end)
   end
 
   #
@@ -439,12 +437,6 @@ defmodule Derive do
     reason -> {:error, reason}
   catch
     reason -> {:error, reason}
-  end
-
-  defp to_atom_safe(string) do
-    String.to_existing_atom(string)
-  rescue
-    _ -> String.to_atom(string)
   end
 
   defp last_position([_ | _] = events), do: List.last(events).id

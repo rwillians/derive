@@ -395,7 +395,9 @@ defmodule Derive do
     reason -> {:error, reason}
   end
 
-  defp before_persist(side_effects, with: handler) do
+  defp before_persist([], _), do: {:ok, []}
+
+  defp before_persist([_ | _] = side_effects, with: handler) do
     {:ok, handler.(side_effects)}
   rescue
     reason -> {:error, reason}
@@ -408,15 +410,15 @@ defmodule Derive do
   defp normalize([_ | _] = side_effects), do: side_effects
   defp normalize(%_{} = side_effect), do: [side_effect]
 
+  defp into_multi(%Multi{} = multi, []), do: multi
+
   defp into_multi(%Multi{} = multi, [_ | _] = side_effects) do
     side_effects
     |> Enum.with_index()
     |> Enum.reduce(multi, fn {side_effect, i}, acc -> append(side_effect, acc, {:side_effect, i}) end)
   end
 
-  defp persist(state, [], _), do: {:ok, state}
-
-  defp persist(%State{repo: repo, cursor: cursor} = state, [_ | _] = side_effects, [_ | _] = events) do
+  defp persist(%State{repo: repo, cursor: cursor} = state, side_effects, [_ | _] = events) do
     result =
       Multi.new()
       |> into_multi(side_effects)

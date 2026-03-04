@@ -283,11 +283,12 @@ defmodule Derive do
         timer = Process.send_after(self(), :resume, :timer.seconds(5))
         {:noreply, up_to_date(state, timer)}
 
-      {:error, reason} ->
-        Logger.error(Exception.format(:error, reason))
+      {:error, reason, stack} ->
+        msg = Exception.format(:error, reason, stack)
+        Logger.error(msg)
         timeout = backoff(state.error_count + 1)
         timer = Process.send_after(self(), :resume, timeout)
-        {:noreply, failed(state, reason, timer)}
+        {:noreply, failed(state, msg, timer)}
     end
   end
 
@@ -328,7 +329,7 @@ defmodule Derive do
   defp failed(state, reason, timer) do
     cursor =
       state.cursor
-      |> Cursor.changeset(%{stuck_since: utc_now(), stuck_reason: Exception.format(:error, reason)})
+      |> Cursor.changeset(%{stuck_since: utc_now(), stuck_reason: reason})
       |> state.repo.update!()
 
     %{
@@ -362,7 +363,11 @@ defmodule Derive do
 
       {:error, reason} ->
         _ = consumer.on_failed(repo, reason)
-        {:error, reason}
+        {:error, reason, []}
+
+      {:error, reason, stack} ->
+        _ = consumer.on_failed(repo, reason)
+        {:error, reason, stack}
     end
   end
 
@@ -390,9 +395,9 @@ defmodule Derive do
   defp handle_events(events, with: handler) do
     {:ok, Enum.flat_map(events, &normalize(handler.(&1)))}
   rescue
-    reason -> {:error, reason}
+    reason -> {:error, reason, __STACKTRACE__}
   catch
-    reason -> {:error, reason}
+    reason -> {:error, reason, __STACKTRACE__}
   end
 
   defp before_persist([], _), do: {:ok, []}
@@ -400,9 +405,9 @@ defmodule Derive do
   defp before_persist([_ | _] = side_effects, with: handler) do
     {:ok, handler.(side_effects)}
   rescue
-    reason -> {:error, reason}
+    reason -> {:error, reason, __STACKTRACE__}
   catch
-    reason -> {:error, reason}
+    reason -> {:error, reason, __STACKTRACE__}
   end
 
   defp normalize(:skip), do: []

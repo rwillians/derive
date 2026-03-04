@@ -414,7 +414,7 @@ defmodule Derive do
     |> Enum.reduce(multi, fn {side_effect, i}, acc -> append(side_effect, acc, {:side_effect, i}) end)
   end
 
-  defp persist(_, [], _), do: :ok
+  defp persist(state, [], _), do: {:ok, state}
 
   defp persist(%State{repo: repo, cursor: cursor} = state, [_ | _] = side_effects, [_ | _] = events) do
     result =

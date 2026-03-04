@@ -435,7 +435,7 @@ defmodule Derive do
 
   defp last_position([_ | _] = events), do: List.last(events).id
 
-  defp backoff(attempt, base_ms \\ :timer.seconds(1), max_ms \\ :timer.minutes(5)) do
+  defp backoff(attempt, base_ms \\ :timer.seconds(1), max_ms \\ :timer.minutes(3)) do
     delay = min(base_ms * Integer.pow(2, attempt), max_ms)
     jitter = :rand.uniform(delay)
 

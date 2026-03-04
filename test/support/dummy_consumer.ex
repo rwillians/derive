@@ -1,6 +1,4 @@
 defmodule Dummy.Consumer do
-  @moduledoc false
-
   use Derive, otp_app: :derive
 
   alias Dummy.Inbox, as: Event

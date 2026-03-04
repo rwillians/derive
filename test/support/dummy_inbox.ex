@@ -1,6 +1,4 @@
 defmodule Dummy.Inbox do
-  @moduledoc false
-
   use Ecto.Schema
 
   import Ecto.Query

@@ -114,7 +114,7 @@ defmodule Derive do
   """
   @doc since: "0.1.0"
 
-  @callback persist(repo, [side_effect, ...]) :: :ok | {:error, reason}
+  @callback before_persist([side_effect, ...]) :: [side_effect, ...]
 
   @doc ~S"""
   @todo add documentation
@@ -163,7 +163,6 @@ defmodule Derive do
     quote do
       @behaviour unquote(__MODULE__)
 
-      import unquote(__MODULE__), only: [into_multi: 1, into_multi: 2]
       import Derive.SideEffect.Delete
       import Derive.SideEffect.Insert
       import Derive.SideEffect.Run
@@ -203,12 +202,7 @@ defmodule Derive do
       def prepare(event), do: event
 
       @impl unquote(__MODULE__)
-      def persist(repo, [_ | _] = side_effects) do
-        case repo.transact(into_multi(side_effects)) do
-          {:ok, _} -> :ok
-          {:error, _, reason, _} -> {:error, reason}
-        end
-      end
+      def before_persist([_ | _] = side_effects), do: side_effects
 
       @impl unquote(__MODULE__)
       def on_persisted(_, _), do: :ok
@@ -217,31 +211,10 @@ defmodule Derive do
       def on_failed(_, _), do: :ok
 
       defoverridable prepare: 1,
-                     persist: 2,
+                     before_persist: 1,
                      on_persisted: 2,
                      on_failed: 2
     end
-  end
-
-  #
-  #   ↓ PUBLIC API
-  #
-
-  @doc ~S"""
-  @todo add documentation
-  """
-  @doc since: "0.1.0"
-
-  @spec into_multi([side_effect], multi) :: multi
-        when multi: Ecto.Multi.t()
-
-  def into_multi(side_effects, multi \\ Multi.new())
-  def into_multi([], %Multi{} = multi), do: multi
-
-  def into_multi([_ | _] = side_effects, %Multi{} = multi) do
-    side_effects
-    |> Enum.with_index()
-    |> Enum.reduce(multi, fn {side_effect, i}, acc -> append(side_effect, acc, {:side_effect, i}) end)
   end
 
   #
@@ -303,7 +276,7 @@ defmodule Derive do
     case process(state) do
       {:ok, state, events} ->
         Logger.debug("ingestion succeeded, processed #{length(events)} new events")
-        {:noreply, progressed(state, to: last_position(events)), {:continue, :ingest}}
+        {:noreply, state, {:continue, :ingest}}
 
       :end_of_stream ->
         Logger.debug("up to date, will sleep for 5 seconds...")
@@ -326,17 +299,16 @@ defmodule Derive do
   #   ↓ STATE API
   #
 
-  defp progressed(state, to: new_position) do
-    cursor =
-      state.cursor
-      |> Cursor.changeset(%{position: new_position, last_synced_at: utc_now(), stuck_since: nil, stuck_reason: nil})
-      |> state.repo.update!()
+  defp progressed(%Multi{} = multi, name, %Cursor{} = cursor, [_ | _] = events) do
+    changeset =
+      Cursor.changeset(cursor, %{
+        position: last_position(events),
+        last_synced_at: utc_now(),
+        stuck_since: nil,
+        stuck_reason: nil
+      })
 
-    %{
-      state
-      | cursor: cursor,
-        error_count: 0
-    }
+    Multi.update(multi, name, changeset, returning: true)
   end
 
   defp up_to_date(state, timer) do
@@ -380,11 +352,10 @@ defmodule Derive do
     with {:ok, [_ | _] = events} <- fetch(consumer, repo, filters),
          {:ok, prepared_events} <- prepare_events(events, with: &consumer.prepare/1),
          {:ok, side_effects} <- handle_events(prepared_events, with: &consumer.handle_event/1),
-         :ok <- persist(repo, side_effects, with: &consumer.persist/2),
+         {:ok, side_effects} <- before_persist(side_effects, with: &consumer.before_persist/1),
+         {:ok, state} <- persist(state, side_effects, events),
          _ <- consumer.on_persisted(repo, events) do
-      #              because skipped events on prepare_events/2 are
-      #            ↓ considered as "handled"
-      {:ok, state, events}
+      {:ok, state, length(events)}
     else
       :end_of_stream ->
         :end_of_stream
@@ -424,15 +395,38 @@ defmodule Derive do
     reason -> {:error, reason}
   end
 
+  defp before_persist(side_effects, with: handler) do
+    {:ok, handler.(side_effects)}
+  rescue
+    reason -> {:error, reason}
+  catch
+    reason -> {:error, reason}
+  end
+
   defp normalize(:skip), do: []
   defp normalize([]), do: []
   defp normalize([_ | _] = side_effects), do: side_effects
   defp normalize(%_{} = side_effect), do: [side_effect]
 
+  defp into_multi(%Multi{} = multi, [_ | _] = side_effects) do
+    side_effects
+    |> Enum.with_index()
+    |> Enum.reduce(multi, fn {side_effect, i}, acc -> append(side_effect, acc, {:side_effect, i}) end)
+  end
+
   defp persist(_, [], _), do: :ok
 
-  defp persist(repo, side_effects, with: handler) do
-    handler.(repo, side_effects)
+  defp persist(%State{repo: repo, cursor: cursor} = state, [_ | _] = side_effects, [_ | _] = events) do
+    result =
+      Multi.new()
+      |> into_multi(side_effects)
+      |> progressed(:cursor, cursor, events)
+      |> repo.transact()
+
+    case result do
+      {:ok, %{cursor: cursor}} -> {:ok, %{state | cursor: cursor, error_count: 0}}
+      {:error, _, reason, _} -> {:error, reason}
+    end
   rescue
     reason -> {:error, reason}
   catch

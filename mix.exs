@@ -1,11 +1,11 @@
 defmodule Derive.MixProject do
   use Mix.Project
 
-  @version "0.4.4"
+  @version "0.5.0"
   @github "https://github.com/rwillians/derive"
 
   @description """
-  A small, simple, and yet flexible API for deriving state from an event source, that works out of the box with Ecto.
+  A small, simple, and yet flexible API for deriving state from an event source that works out of the box with Ecto.
   """
 
   def project do

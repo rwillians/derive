@@ -274,8 +274,8 @@ defmodule Derive do
   @doc false
   def handle_continue(:ingest, %State{} = state) do
     case process(state) do
-      {:ok, state, events} ->
-        Logger.debug("ingestion succeeded, processed #{length(events)} new events")
+      {:ok, state, count} ->
+        Logger.debug("ingestion succeeded, processed #{count} new events")
         {:noreply, state, {:continue, :ingest}}
 
       :end_of_stream ->
